@@ -1,68 +1,57 @@
 import asyncio
 import json
-import os
 import websockets
+import random
 
-rooms = {}
+USERS = 200
+ROOM_ID = "room-1"
+WS_URL = "wss://render-test-6bid.onrender.com"
 
-async def handler(websocket):
-    user_id = None
-    room_id = None
+# Limit connection burst (important for Render)
+SEM = asyncio.Semaphore(25)
 
-    try:
-        async for message in websocket:
-            data = json.loads(message)
+async def simulate_user(user_id):
+    async with SEM:
+        try:
+            async with websockets.connect(
+                WS_URL,
+                ping_interval=20,
+                ping_timeout=20
+            ) as ws:
 
-            # JOIN ROOM
-            if data.get("type") == "join":
-                user_id = data.get("userId")
-                room_id = data.get("roomId")
-
-                if room_id not in rooms:
-                    rooms[room_id] = set()
-
-                rooms[room_id].add(websocket)
-
-                await websocket.send(json.dumps({
-                    "type": "joined",
-                    "roomId": room_id
+                # JOIN
+                await ws.send(json.dumps({
+                    "type": "join",
+                    "userId": f"user-{user_id}",
+                    "roomId": ROOM_ID
                 }))
 
-            # BROADCAST EVENTS
-            elif data.get("type") == "draw" and room_id:
-                payload = json.dumps({
+                await ws.recv()
+                print(f"user-{user_id} joined")
+
+                # DRAW EVENT
+                await asyncio.sleep(random.uniform(0.2, 1.5))
+                await ws.send(json.dumps({
                     "type": "draw",
-                    "userId": user_id,
-                    "payload": data.get("payload")
-                })
+                    "payload": {
+                        "shape": "rect",
+                        "x": random.randint(0, 800),
+                        "y": random.randint(0, 600),
+                        "width": 40,
+                        "height": 40
+                    }
+                }))
 
-                for client in list(rooms.get(room_id, [])):
-                    if client != websocket:
-                        try:
-                            await client.send(payload)
-                        except:
-                            pass
+                # Stay connected
+                await asyncio.sleep(2)
 
-    except websockets.exceptions.ConnectionClosed:
-        pass
-
-    finally:
-        # CLEANUP
-        if room_id and room_id in rooms:
-            rooms[room_id].discard(websocket)
-            if not rooms[room_id]:
-                del rooms[room_id]
+        except Exception as e:
+            print(f"user-{user_id} error: {e}")
 
 async def main():
-    port = int(os.environ.get("PORT", 8765))
-    print(f"WebSocket running on 0.0.0.0:{port}")
-
-    async with websockets.serve(
-        handler,
-        "0.0.0.0",
-        port
-    ):
-        await asyncio.Future()
-
+    await asyncio.gather(*[
+        simulate_user(i)
+        for i in range(1, USERS + 1)
+    ])
 
 asyncio.run(main())
